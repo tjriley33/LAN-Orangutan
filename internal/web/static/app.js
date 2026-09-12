@@ -356,7 +356,7 @@ function filterDevices() {
 
     let visible = 0;
     document.querySelectorAll('.device-row').forEach(row => {
-        const text = [row.dataset.ip, row.dataset.hostname, row.dataset.mac, row.dataset.vendor, row.dataset.label, row.dataset.type].join(' ').toLowerCase();
+        const text = [row.dataset.ip, row.dataset.hostname, row.dataset.scannedHostname, row.dataset.mac, row.dataset.vendor, row.dataset.label, row.dataset.type].join(' ').toLowerCase();
         const status = row.dataset.status;
         const group = row.dataset.group || '';
 
@@ -386,6 +386,15 @@ function editDevice(ip) {
     document.getElementById('edit-ip').value = ip;
     document.getElementById('edit-ip-display').value = ip;
     document.getElementById('edit-label').value = row.dataset.labelOriginal || '';
+    // The custom hostname and type fields hold only what the user set. The
+    // detected value they fall back to shows as the placeholder, so clearing a
+    // field visibly reveals what the device will be called instead.
+    const hostname = document.getElementById('edit-hostname');
+    hostname.value = row.dataset.customHostname || '';
+    hostname.placeholder = row.dataset.scannedHostname ? `Scanned: ${row.dataset.scannedHostname}` : 'Scan found no hostname';
+    const type = document.getElementById('edit-type');
+    type.value = row.dataset.customType || '';
+    type.placeholder = row.dataset.autoType ? `Detected: ${row.dataset.autoType}` : 'Nothing detected';
     document.getElementById('edit-group').value = row.dataset.group || '';
     document.getElementById('edit-notes').value = row.dataset.notes || '';
     modal.style.display = 'flex';
@@ -401,8 +410,10 @@ async function saveDevice() {
     const label = document.getElementById('edit-label').value;
     const group = document.getElementById('edit-group').value;
     const notes = document.getElementById('edit-notes').value;
+    const custom_hostname = document.getElementById('edit-hostname').value;
+    const custom_type = document.getElementById('edit-type').value;
     try {
-        const result = await api('device', { ip, label, group, notes }, 'POST');
+        const result = await api('device', { ip, label, group, notes, custom_hostname, custom_type }, 'POST');
         if (result.success) {
             showToast('Device updated', 'success');
             closeModal();
@@ -555,6 +566,7 @@ function exportDevices(format) {
             devices.push({
                 ip: row.dataset.ip,
                 hostname: row.querySelector('.hostname-cell')?.textContent?.trim() || '',
+                type: row.querySelector('.type-badge')?.textContent?.trim() || '',
                 mac: row.dataset.mac?.toUpperCase() || '',
                 vendor: row.querySelector('.vendor-cell')?.textContent?.trim() || '',
                 label: row.dataset.labelOriginal || '',
@@ -567,10 +579,10 @@ function exportDevices(format) {
     let content, filename, type;
 
     if (format === 'csv') {
-        const headers = ['IP', 'Hostname', 'MAC', 'Vendor', 'Label', 'Group', 'Status'];
+        const headers = ['IP', 'Hostname', 'Type', 'MAC', 'Vendor', 'Label', 'Group', 'Status'];
         const csvRows = [headers.join(',')];
         devices.forEach(d => {
-            csvRows.push([d.ip, d.hostname, d.mac, d.vendor, d.label, d.group, d.status]
+            csvRows.push([d.ip, d.hostname, d.type, d.mac, d.vendor, d.label, d.group, d.status]
                 .map(v => `"${(v || '').replace(/"/g, '""')}"`)
                 .join(','));
         });

@@ -96,7 +96,7 @@ func outputTable(devices []*types.Device) error {
 			status = "seen"
 		}
 
-		hostname := d.Hostname
+		hostname := d.DisplayHostname()
 		if len(hostname) > 25 {
 			hostname = hostname[:22] + "..."
 		}
@@ -126,7 +126,7 @@ func outputCSV(devices []*types.Device) error {
 		if err := w.Write([]string{
 			d.IP,
 			d.MAC,
-			d.Hostname,
+			d.DisplayHostname(),
 			scanner.ResolveVendor(d.Vendor, d.MAC),
 			d.Label,
 			d.Notes,
@@ -150,7 +150,7 @@ func outputJSON(devices []*types.Device) error {
 			comma = ""
 		}
 		fmt.Printf("  {\"ip\": %q, \"mac\": %q, \"hostname\": %q, \"vendor\": %q, \"label\": %q, \"group\": %q}%s\n",
-			d.IP, d.MAC, d.Hostname, scanner.ResolveVendor(d.Vendor, d.MAC), d.Label, d.Group, comma)
+			d.IP, d.MAC, d.DisplayHostname(), scanner.ResolveVendor(d.Vendor, d.MAC), d.Label, d.Group, comma)
 	}
 	fmt.Println("]")
 	return nil

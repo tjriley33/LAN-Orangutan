@@ -1,6 +1,10 @@
 package scanner
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/291-Group/LAN-Orangutan/internal/types"
+)
 
 // Device type labels produced by Classify. They are stable strings so stored
 // records, the API and the UI can all rely on them. TypeUnknown is the empty
@@ -17,6 +21,35 @@ const (
 	TypeConsole     = "Game Console"
 	TypeUnknown     = ""
 )
+
+// KnownTypes lists every type Classify can return, so the UI can offer them as
+// suggestions when the user sets a device's type by hand.
+var KnownTypes = []string{
+	TypeComputer, TypeConsole, TypeIoT, TypeMediaPlayer, TypePhone,
+	TypePrinter, TypeRouter, TypeServer, TypeTV,
+}
+
+// InferredType returns the type detected for a device, ignoring any override
+// the user set: the type recorded at scan time or, for a record that predates
+// classification, one inferred now from its vendor and scanned hostname. Pass
+// the resolved vendor (see ResolveVendor). Port evidence is not available here,
+// so the backfill is the default path, not the opt-in probe.
+func InferredType(d *types.Device, vendor string) string {
+	if d.Type != "" {
+		return d.Type
+	}
+	return Classify(vendor, d.Hostname, nil)
+}
+
+// ResolveType returns the type to show for a device: the user's CustomType when
+// one is set, otherwise the inferred type. Clearing the override therefore falls
+// straight back to detection instead of leaving the type blank.
+func ResolveType(d *types.Device, vendor string) string {
+	if d.CustomType != "" {
+		return d.CustomType
+	}
+	return InferredType(d, vendor)
+}
 
 // Classify infers a device's type from the signals a scan gathers: its vendor
 // (from the MAC OUI), its hostname, and, when service detection is enabled, the

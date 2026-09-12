@@ -76,6 +76,8 @@ func runExport(cmd *cobra.Command, args []string) error {
 		"First Seen",
 		"Last Seen",
 		"Status",
+		"Type",
+		"Scanned Hostname",
 	}); err != nil {
 		return fmt.Errorf("failed to write header: %w", err)
 	}
@@ -87,17 +89,20 @@ func runExport(cmd *cobra.Command, args []string) error {
 			status = "online"
 		}
 
+		vendor := scanner.ResolveVendor(d.Vendor, d.MAC)
 		if err := w.Write([]string{
 			d.IP,
 			d.MAC,
-			d.Hostname,
-			scanner.ResolveVendor(d.Vendor, d.MAC),
+			d.DisplayHostname(),
+			vendor,
 			d.Label,
 			d.Notes,
 			d.Group,
 			d.FirstSeen.Format("2006-01-02 15:04:05"),
 			d.LastSeen.Format("2006-01-02 15:04:05"),
 			status,
+			scanner.ResolveType(d, vendor),
+			d.Hostname,
 		}); err != nil {
 			return fmt.Errorf("failed to write row: %w", err)
 		}

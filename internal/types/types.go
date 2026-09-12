@@ -28,6 +28,15 @@ type Device struct {
 	LastSeen     time.Time `json:"last_seen"`
 	ResponseTime *float64  `json:"response_time,omitempty"`
 
+	// CustomHostname is a name the user gave the device. It sits alongside the
+	// scanned Hostname rather than replacing it: scans keep refreshing Hostname
+	// and never write this, and clearing it shows the scanned name again.
+	CustomHostname string `json:"custom_hostname,omitempty"`
+	// CustomType is a device kind the user chose, overriding the inferred Type
+	// the same way CustomHostname overrides Hostname. It is free text, so it can
+	// name a kind the classifier does not know; "" means use the inferred type.
+	CustomType string `json:"custom_type,omitempty"`
+
 	// AddressHistory lists earlier IPs this device (matched by its MAC) was seen
 	// at, oldest first. Empty for a device that has never changed address.
 	AddressHistory []AddressChange `json:"address_history,omitempty"`
@@ -48,6 +57,15 @@ func (d *Device) IsOnline() bool {
 // IsRecent returns true if the device was seen within the last 5 minutes
 func (d *Device) IsRecent() bool {
 	return time.Since(d.LastSeen) < 5*time.Minute
+}
+
+// DisplayHostname returns the name to show for the device: the user's custom
+// hostname when one is set, otherwise the scanned hostname.
+func (d *Device) DisplayHostname() string {
+	if d.CustomHostname != "" {
+		return d.CustomHostname
+	}
+	return d.Hostname
 }
 
 // Network represents a detected network interface

@@ -812,6 +812,34 @@ body.strip-docked .stat-strip .stat-chip-filter {
     border: 1px solid var(--border-color);
 }
 
+/* A type the user set by hand: a dashed outline marks it as an override, the
+   same cue the pencil gives a custom hostname. */
+.type-badge-custom {
+    border-style: dashed;
+    cursor: help;
+}
+
+.custom-indicator {
+    margin-left: 0.35rem;
+    cursor: help;
+    opacity: 0.7;
+}
+
+.custom-indicator:hover {
+    opacity: 1;
+}
+
+.custom-indicator .icon {
+    color: var(--text-muted);
+    vertical-align: -1px;
+}
+
+.form-hint {
+    margin: 0.35rem 0 0;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
 .type-icon {
     flex: 0 0 auto;
     opacity: 0.85;

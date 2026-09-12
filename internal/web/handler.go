@@ -80,6 +80,10 @@ type PageData struct {
 	// the dashboard shows a "live" cue so the last-scan time does not read as
 	// stale data when it is actually being kept current.
 	ContinuousScan bool
+
+	// TypeOptions lists the types the scanner can infer, offered as suggestions
+	// when the user sets a device's type by hand.
+	TypeOptions []string
 }
 
 // DeviceView is a device with computed display properties
@@ -94,9 +98,18 @@ type DeviceView struct {
 	// predate the built-in manufacturer database.
 	Vendor string
 
-	// Type shadows the stored value so a device recorded before classification
-	// existed still shows a type, inferred from its vendor and hostname now.
+	// Hostname shadows the stored value with the name to show: the user's custom
+	// hostname when set, otherwise the scanned one (still at .Device.Hostname).
+	Hostname string
+
+	// Type shadows the stored value with the type to show: the user's custom
+	// type when set, otherwise AutoType.
 	Type string
+
+	// AutoType is the type detected without the user's override, including one
+	// inferred now for a device recorded before classification existed. The edit
+	// form shows it as what a cleared custom type falls back to.
+	AutoType string
 }
 
 // NewHandler creates a new web handler
@@ -335,13 +348,9 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 			TimeAgo:      timeAgo(d.LastSeen),
 			LastSeenUnix: d.LastSeen.Unix(),
 			Vendor:       resolvedVendor,
-			Type:         d.Type,
-		}
-		// Backfill a type for records that predate classification, from the same
-		// vendor and hostname the row already shows. Port evidence is not
-		// available here, so this is the default path, not the opt-in probe.
-		if dv.Type == "" {
-			dv.Type = scanner.Classify(resolvedVendor, d.Hostname, nil)
+			Hostname:     d.DisplayHostname(),
+			Type:         scanner.ResolveType(d, resolvedVendor),
+			AutoType:     scanner.InferredType(d, resolvedVendor),
 		}
 
 		if d.IsRecent() {
@@ -395,6 +404,7 @@ func (h *Handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		AuthEnabled:    h.auth.Enabled(),
 		Flagged:        flagged,
 		Moved:          moved,
+		TypeOptions:    scanner.KnownTypes,
 		Version:        h.version,
 		ContinuousScan: h.store.ContinuousScanEnabled(h.cfg.Scanning.ContinuousScan),
 	}

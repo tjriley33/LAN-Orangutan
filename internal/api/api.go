@@ -147,9 +147,13 @@ func (h *Handler) writeDevicesCSV(w http.ResponseWriter, devices map[string]*typ
 	cw := csv.NewWriter(w)
 	defer cw.Flush()
 
+	// Hostname is the name the dashboard shows, so the user's custom one when
+	// set. Type and the scanned hostname are appended rather than inserted, so
+	// the existing columns keep their positions.
 	_ = cw.Write([]string{
 		"IP Address", "MAC Address", "Hostname", "Vendor", "Label",
 		"Notes", "Group", "First Seen", "Last Seen", "Status",
+		"Type", "Scanned Hostname",
 	})
 
 	for _, d := range sorted {
@@ -157,11 +161,13 @@ func (h *Handler) writeDevicesCSV(w http.ResponseWriter, devices map[string]*typ
 		if d.IsOnline() {
 			status = "online"
 		}
+		vendor := scanner.ResolveVendor(d.Vendor, d.MAC)
 		_ = cw.Write([]string{
-			d.IP, d.MAC, d.Hostname, scanner.ResolveVendor(d.Vendor, d.MAC), d.Label, d.Notes, d.Group,
+			d.IP, d.MAC, d.DisplayHostname(), vendor, d.Label, d.Notes, d.Group,
 			d.FirstSeen.Format("2006-01-02 15:04:05"),
 			d.LastSeen.Format("2006-01-02 15:04:05"),
 			status,
+			scanner.ResolveType(d, vendor), d.Hostname,
 		})
 	}
 }
@@ -184,10 +190,12 @@ func (h *Handler) handleDevice(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			IP    string  `json:"ip"`
-			Label *string `json:"label"`
-			Notes *string `json:"notes"`
-			Group *string `json:"group"`
+			IP             string  `json:"ip"`
+			Label          *string `json:"label"`
+			Notes          *string `json:"notes"`
+			Group          *string `json:"group"`
+			CustomHostname *string `json:"custom_hostname"`
+			CustomType     *string `json:"custom_type"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			h.error(w, http.StatusBadRequest, "invalid JSON")
@@ -204,7 +212,14 @@ func (h *Handler) handleDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := h.store.UpdateDeviceFields(ip, req.Label, req.Notes, req.Group); err != nil {
+		edit := storage.DeviceEdit{
+			Label:          req.Label,
+			Notes:          req.Notes,
+			Group:          req.Group,
+			CustomHostname: req.CustomHostname,
+			CustomType:     req.CustomType,
+		}
+		if err := h.store.EditDevice(ip, edit); err != nil {
 			h.error(w, http.StatusNotFound, err.Error())
 			return
 		}

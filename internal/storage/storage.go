@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,6 +208,12 @@ func (s *Storage) UpdateDevice(device *types.Device) error {
 		if device.Group == "" {
 			device.Group = existing.Group
 		}
+		if device.CustomHostname == "" {
+			device.CustomHostname = existing.CustomHostname
+		}
+		if device.CustomType == "" {
+			device.CustomType = existing.CustomType
+		}
 		if device.FirstSeen.IsZero() {
 			device.FirstSeen = existing.FirstSeen
 		}
@@ -216,8 +223,27 @@ func (s *Storage) UpdateDevice(device *types.Device) error {
 	return s.saveDevices()
 }
 
+// DeviceEdit is a user's change to a device. A nil field is left as it is; a
+// non-nil one replaces the stored value.
+//
+// CustomHostname and CustomType are overrides that sit alongside the scanned
+// Hostname and the inferred Type. No scan ever writes them, and setting one to
+// "" (or only whitespace) clears it, so the detected value shows again.
+type DeviceEdit struct {
+	Label          *string
+	Notes          *string
+	Group          *string
+	CustomHostname *string
+	CustomType     *string
+}
+
 // UpdateDeviceFields updates specific fields of a device
 func (s *Storage) UpdateDeviceFields(ip string, label, notes, group *string) error {
+	return s.EditDevice(ip, DeviceEdit{Label: label, Notes: notes, Group: group})
+}
+
+// EditDevice applies a user's edit to the device at ip, in one save.
+func (s *Storage) EditDevice(ip string, edit DeviceEdit) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -226,14 +252,22 @@ func (s *Storage) UpdateDeviceFields(ip string, label, notes, group *string) err
 		return fmt.Errorf("device not found: %s", ip)
 	}
 
-	if label != nil {
-		device.Label = *label
+	if edit.Label != nil {
+		device.Label = *edit.Label
 	}
-	if notes != nil {
-		device.Notes = *notes
+	if edit.Notes != nil {
+		device.Notes = *edit.Notes
 	}
-	if group != nil {
-		device.Group = *group
+	if edit.Group != nil {
+		device.Group = *edit.Group
+	}
+	// Trimmed so a stray space cannot become an override that looks blank but
+	// still hides the scanned value.
+	if edit.CustomHostname != nil {
+		device.CustomHostname = strings.TrimSpace(*edit.CustomHostname)
+	}
+	if edit.CustomType != nil {
+		device.CustomType = strings.TrimSpace(*edit.CustomType)
 	}
 
 	return s.saveDevices()
@@ -396,6 +430,8 @@ func (s *Storage) addNewDeviceLocked(d *types.Device, now time.Time) {
 			d.Label = old.Label
 			d.Notes = old.Notes
 			d.Group = old.Group
+			d.CustomHostname = old.CustomHostname
+			d.CustomType = old.CustomType
 			d.FirstSeen = old.FirstSeen
 			if d.Type == "" {
 				d.Type = old.Type
@@ -467,8 +503,8 @@ func isRandomizedMAC(mac string) bool {
 // runs on load so existing installs heal down to the real device count; once
 // healed it is a no-op, because no code path creates such entries any more.
 //
-// It never removes a device the user has curated (a label, notes or a group),
-// so a real device that happens to be keyed by such an address keeps its data
+// It never removes a device the user has curated (a label, notes, a group, or a
+// custom hostname or type), so a real device that happens to be keyed by such an address keeps its data
 // instead of being wiped and re-created on every restart. Returns whether
 // anything was removed. Callers hold s.mu.
 func (s *Storage) pruneEphemeralIPv6Locked() bool {
@@ -478,7 +514,7 @@ func (s *Storage) pruneEphemeralIPv6Locked() bool {
 		if parsed == nil || parsed.To4() != nil {
 			continue // not IPv6
 		}
-		if dev.Label != "" || dev.Notes != "" || dev.Group != "" {
+		if dev.Label != "" || dev.Notes != "" || dev.Group != "" || dev.CustomHostname != "" || dev.CustomType != "" {
 			continue // curated by the user: never auto-delete
 		}
 		if parsed.IsLinkLocalUnicast() || (dev.MAC != "" && isRandomizedMAC(dev.MAC)) {
