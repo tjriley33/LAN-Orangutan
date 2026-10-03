@@ -21,6 +21,15 @@ type Storage struct {
 	mu          sync.RWMutex
 	devices     map[string]*types.Device
 	state       *types.ScanState
+
+	// parked holds curated devices (ones with a label, notes, group or an
+	// override) that lost their IP to a different device, keyed by upper-case
+	// MAC. DHCP hands an offline device's address to someone else, and devices
+	// are stored by IP, so without this the user's data would either be lost or
+	// stay behind on the IP and describe the newcomer. A parked device is
+	// restored, user data and all, when its MAC is next seen at any address.
+	parkedFile string
+	parked     map[string]*types.Device
 }
 
 // New creates a new Storage instance
@@ -28,7 +37,9 @@ func New(devicesFile, stateFile string) (*Storage, error) {
 	s := &Storage{
 		devicesFile: devicesFile,
 		stateFile:   stateFile,
+		parkedFile:  filepath.Join(filepath.Dir(devicesFile), "parked_devices.json"),
 		devices:     make(map[string]*types.Device),
+		parked:      make(map[string]*types.Device),
 		state: &types.ScanState{
 			LastScan:     make(map[string]time.Time),
 			LastDuration: make(map[string]float64),
@@ -48,6 +59,9 @@ func New(devicesFile, stateFile string) (*Storage, error) {
 	}
 	if err := s.loadState(); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("could not read the scan history at %s: %w", stateFile, err)
+	}
+	if err := s.loadParked(); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("could not read the parked device list at %s: %w", s.parkedFile, err)
 	}
 
 	// One-time cleanup: drop phantom devices created from noisy IPv6 neighbour
@@ -109,6 +123,33 @@ func (s *Storage) saveDevices() error {
 	}
 
 	return atomicWrite(s.devicesFile, data)
+}
+
+// loadParked reads devices parked after losing their IP to another device
+func (s *Storage) loadParked() error {
+	data, err := os.ReadFile(s.parkedFile)
+	if err != nil {
+		return err
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(data, &s.parked); err != nil {
+		return err
+	}
+	if s.parked == nil {
+		s.parked = make(map[string]*types.Device)
+	}
+	return nil
+}
+
+// saveParked writes the parked devices atomically
+func (s *Storage) saveParked() error {
+	data, err := json.MarshalIndent(s.parked, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal parked devices: %w", err)
+	}
+	return atomicWrite(s.parkedFile, data)
 }
 
 // saveState writes scan state to the JSON file atomically
@@ -292,7 +333,25 @@ func (s *Storage) MergeDevices(discovered []types.Device) error {
 	defer s.mu.Unlock()
 
 	now := time.Now()
+	parkedChanged := false
 	for _, d := range discovered {
+		if existing, ok := s.devices[d.IP]; ok && d.MAC != "" && existing.MAC != "" && !strings.EqualFold(existing.MAC, d.MAC) {
+			// A different device now holds this IP: DHCP gave the previous
+			// occupant's address away. The user's data belongs to the MAC, not
+			// the address, so park the previous occupant and file the newcomer
+			// as a device arriving at this IP (which carries its own data over
+			// if it was known elsewhere).
+			if hasUserData(existing) {
+				s.parked[strings.ToUpper(existing.MAC)] = existing
+				parkedChanged = true
+			}
+			delete(s.devices, d.IP)
+			dev := d
+			if s.addNewDeviceLocked(&dev, now) {
+				parkedChanged = true
+			}
+			continue
+		}
 		if existing, ok := s.devices[d.IP]; ok {
 			// A primary scan is authoritative. It replaces the probe fields
 			// (WebUI and Risks reflect the latest probe, so a fixed risk stops
@@ -319,11 +378,24 @@ func (s *Storage) MergeDevices(discovered []types.Device) error {
 			existing.LastSeen = now
 		} else {
 			dev := d
-			s.addNewDeviceLocked(&dev, now)
+			if s.addNewDeviceLocked(&dev, now) {
+				parkedChanged = true
+			}
 		}
 	}
 
+	if parkedChanged {
+		if err := s.saveParked(); err != nil {
+			return err
+		}
+	}
 	return s.saveDevices()
+}
+
+// hasUserData reports whether a device carries anything the user set, which is
+// what makes it worth parking when it loses its IP.
+func hasUserData(d *types.Device) bool {
+	return d.Label != "" || d.Notes != "" || d.Group != "" || d.CustomHostname != "" || d.CustomType != ""
 }
 
 // MergeSupplemental folds in devices from a secondary source, such as mDNS or
@@ -359,7 +431,11 @@ func (s *Storage) MergeSupplemental(discovered []types.Device) error {
 			existing.LastSeen = now
 		} else {
 			dev := d
-			s.addNewDeviceLocked(&dev, now)
+			if s.addNewDeviceLocked(&dev, now) {
+				if err := s.saveParked(); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
@@ -410,7 +486,11 @@ func (s *Storage) MergeIPv6Neighbors(discovered []types.Device) error {
 		// address, not a device -- skip it so it cannot accumulate.
 		if !isRandomizedMAC(d.MAC) {
 			dev := d
-			s.addNewDeviceLocked(&dev, now)
+			if s.addNewDeviceLocked(&dev, now) {
+				if err := s.saveParked(); err != nil {
+					return err
+				}
+			}
 			changed = true
 		}
 	}
@@ -422,11 +502,22 @@ func (s *Storage) MergeIPv6Neighbors(discovered []types.Device) error {
 }
 
 // addNewDeviceLocked stores a device newly seen at its IP. If one with the same
-// MAC exists at another IP in the same address family, it moved: its identity
-// and user data carry across and the change is recorded. Callers hold s.mu.
-func (s *Storage) addNewDeviceLocked(d *types.Device, now time.Time) {
+// MAC exists at another IP in the same address family, or was parked after
+// losing its IP, it moved: its identity and user data carry across and the
+// change is recorded. It reports whether a parked device was restored, so the
+// caller knows to save the parked list. Callers hold s.mu.
+func (s *Storage) addNewDeviceLocked(d *types.Device, now time.Time) bool {
+	restored := false
 	if d.MAC != "" {
-		if oldIP, old := s.findByMACLocked(d.MAC, d.IP); old != nil {
+		oldIP, old := s.findByMACLocked(d.MAC, d.IP)
+		if old == nil {
+			if p, ok := s.parked[strings.ToUpper(d.MAC)]; ok && isIPv4(p.IP) == isIPv4(d.IP) {
+				oldIP, old = p.IP, p
+				delete(s.parked, strings.ToUpper(d.MAC))
+				restored = true
+			}
+		}
+		if old != nil {
 			d.Label = old.Label
 			d.Notes = old.Notes
 			d.Group = old.Group
@@ -436,8 +527,14 @@ func (s *Storage) addNewDeviceLocked(d *types.Device, now time.Time) {
 			if d.Type == "" {
 				d.Type = old.Type
 			}
-			d.AddressHistory = appendAddressChange(old.AddressHistory, oldIP, now)
-			delete(s.devices, oldIP)
+			if oldIP != d.IP {
+				d.AddressHistory = appendAddressChange(old.AddressHistory, oldIP, now)
+			} else {
+				d.AddressHistory = old.AddressHistory
+			}
+			if !restored {
+				delete(s.devices, oldIP)
+			}
 		}
 	}
 	if d.FirstSeen.IsZero() {
@@ -445,6 +542,7 @@ func (s *Storage) addNewDeviceLocked(d *types.Device, now time.Time) {
 	}
 	d.LastSeen = now
 	s.devices[d.IP] = d
+	return restored
 }
 
 // findByMACLocked returns the IP and device of a stored device with the given
@@ -458,7 +556,7 @@ func (s *Storage) addNewDeviceLocked(d *types.Device, now time.Time) {
 func (s *Storage) findByMACLocked(mac, excludeIP string) (string, *types.Device) {
 	wantV4 := isIPv4(excludeIP)
 	for ip, dev := range s.devices {
-		if ip != excludeIP && dev.MAC == mac && isIPv4(ip) == wantV4 {
+		if ip != excludeIP && strings.EqualFold(dev.MAC, mac) && isIPv4(ip) == wantV4 {
 			return ip, dev
 		}
 	}
